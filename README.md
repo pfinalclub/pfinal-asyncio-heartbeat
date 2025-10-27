@@ -271,7 +271,6 @@ echo $metrics->export();
 
 - [pfinal-asyncio](https://github.com/pfinalclub/pfinal-asyncio) - 核心异步框架
 - [Workerman](https://www.workerman.net/) - 高性能 PHP Socket 框架
-- [Python asyncio](https://docs.python.org/3/library/asyncio.html) - API 设计参考
 
 ## 📞 联系我们
 
