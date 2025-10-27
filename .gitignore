@@ -1,0 +1,39 @@
+# Composer
+/vendor/
+composer.lock
+
+# PHPUnit
+.phpunit.cache/
+.phpunit.result.cache
+coverage/
+phpunit.xml.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Runtime
+*.pid
+*.sock
+
+# Testing
+tests/_output/
+tests/_support/_generated/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temp files
+tmp/
+temp/
+
