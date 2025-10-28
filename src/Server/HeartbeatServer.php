@@ -7,7 +7,7 @@ use Workerman\Connection\TcpConnection;
 use PfinalClub\AsyncioHeartbeat\Node\{Node, NodeManager, HeartbeatMonitor};
 use PfinalClub\AsyncioHeartbeat\Channel\{ChannelScheduler, MessageRouter};
 use PfinalClub\AsyncioHeartbeat\Protocol\Message;
-use PfinalClub\AsyncioHeartbeat\Utils\{Logger, Metrics};
+use PfinalClub\AsyncioHeartbeat\Utils\{Logger, Metrics, ConfigValidator, RateLimiter};
 use function PfinalClub\Asyncio\{run, create_task, sleep};
 
 /**
@@ -24,19 +24,39 @@ class HeartbeatServer
     private Logger $logger;
     private Metrics $metrics;
     private TcpMultiplexServer $multiplexServer;
+    private RateLimiter $rateLimiter;
     
     public function __construct(
         private string $host = '0.0.0.0',
         private int $port = 9501,
         private array $config = []
     ) {
+        // 合并默认配置
         $this->config = array_merge([
             'worker_count' => 4,
             'heartbeat_timeout' => 30,
             'heartbeat_check_interval' => 10,
             'max_connections' => 1000000,
             'protocol' => 'tcp',
+            'enable_rate_limit' => true,
+            'rate_limit_capacity' => 100,
+            'rate_limit_refill_rate' => 10.0,
         ], $config);
+        
+        // 验证配置
+        try {
+            ConfigValidator::validateServerConfig($this->config);
+            
+            if (!ConfigValidator::validateHost($this->host)) {
+                throw new \InvalidArgumentException("Invalid host: {$this->host}");
+            }
+            
+            if (!ConfigValidator::validatePort($this->port)) {
+                throw new \InvalidArgumentException("Invalid port: {$this->port}");
+            }
+        } catch (\InvalidArgumentException $e) {
+            throw new \RuntimeException("Configuration validation failed: {$e->getMessage()}", 0, $e);
+        }
         
         $this->logger = Logger::getInstance();
         $this->metrics = Metrics::getInstance();
@@ -49,6 +69,14 @@ class HeartbeatServer
             $this->nodeManager,
             $this->config['heartbeat_check_interval']
         );
+        
+        // 初始化限流器
+        if ($this->config['enable_rate_limit']) {
+            $this->rateLimiter = new RateLimiter(
+                $this->config['rate_limit_capacity'],
+                $this->config['rate_limit_refill_rate']
+            );
+        }
         
         $this->setupMonitorCallbacks();
     }
@@ -81,8 +109,25 @@ class HeartbeatServer
                 $this->metrics->setGauge('heartbeat_connections_active', $this->connectionPool->count());
                 
             } catch (\Exception $e) {
-                $this->logger->error("Failed to add connection: {$e->getMessage()}");
+                $this->logger->error("Failed to add connection: {$e->getMessage()}", [
+                    'ip' => $connection->getRemoteIp(),
+                    'port' => $connection->getRemotePort(),
+                    'error_code' => $e->getCode(),
+                ]);
+                
+                // 向客户端发送错误消息后再关闭
+                try {
+                    $errorMsg = Message::createError(
+                        'Server is full or connection limit reached',
+                        503
+                    );
+                    $connection->send($errorMsg->encode());
+                } catch (\Exception $sendError) {
+                    // 忽略发送错误
+                }
+                
                 $connection->close();
+                $this->metrics->incCounter('heartbeat_connection_rejected_total');
             }
         };
         
@@ -142,6 +187,19 @@ class HeartbeatServer
         $startTime = microtime(true);
         
         try {
+            // 限流检查
+            if ($this->config['enable_rate_limit'] && isset($this->rateLimiter)) {
+                $ip = $connection->getRemoteIp();
+                if (!$this->rateLimiter->allow($ip)) {
+                    $this->logger->warning("Rate limit exceeded", ['ip' => $ip]);
+                    $this->metrics->incCounter('heartbeat_rate_limited_total');
+                    
+                    $errorMsg = Message::createError('Rate limit exceeded', 429);
+                    $connection->send($errorMsg->encode());
+                    return;
+                }
+            }
+            
             $message = Message::decode($data);
             
             if (!$message) {
@@ -187,6 +245,18 @@ class HeartbeatServer
             ]);
             
             $this->metrics->incCounter('heartbeat_errors_total');
+            
+            // 向客户端发送错误消息
+            try {
+                $errorMsg = Message::createError(
+                    'Failed to process message: ' . $e->getMessage(),
+                    $e->getCode() ?: 500
+                );
+                $connection->send($errorMsg->encode());
+            } catch (\Exception $sendError) {
+                // 如果发送错误消息也失败，记录日志但不抛出异常
+                $this->logger->error("Failed to send error message: {$sendError->getMessage()}");
+            }
         }
     }
     

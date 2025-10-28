@@ -29,9 +29,17 @@ class MessageRouter
                 $channel = $this->scheduler->getChannel($message->channelId);
                 
                 if ($channel && !$channel->isClosed()) {
-                    $channel->putRecv($message->payload);
-                    $this->totalRouted++;
-                    return true;
+                    // 使用 tryPutRecv 避免队列满时抛出异常
+                    // 如果队列满，自动丢弃最旧的消息（可以配置）
+                    $result = $channel->tryPutRecv($message->payload, true);
+                    
+                    if ($result) {
+                        $this->totalRouted++;
+                        return true;
+                    } else {
+                        $this->totalFailed++;
+                        return false;
+                    }
                 }
             }
             
@@ -63,8 +71,10 @@ class MessageRouter
         foreach ($channels as $channel) {
             if (!$channel->isClosed()) {
                 try {
-                    $channel->putRecv($message->payload);
-                    $count++;
+                    // 使用 tryPutRecv 避免阻塞，队列满时丢弃最旧消息
+                    if ($channel->tryPutRecv($message->payload, true)) {
+                        $count++;
+                    }
                 } catch (\Exception $e) {
                     // 忽略错误，继续广播
                 }
@@ -86,8 +96,10 @@ class MessageRouter
         foreach ($channels as $channel) {
             if (!$channel->isClosed()) {
                 try {
-                    $channel->putRecv($message->payload);
-                    $count++;
+                    // 使用 tryPutRecv 避免阻塞，队列满时丢弃最旧消息
+                    if ($channel->tryPutRecv($message->payload, true)) {
+                        $count++;
+                    }
                 } catch (\Exception $e) {
                     // 忽略错误，继续广播
                 }

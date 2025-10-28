@@ -163,6 +163,11 @@ class HeartbeatClient
                 case Message::TYPE_ERROR:
                     $payload = json_decode($message->payload, true);
                     $this->logger->error("Server error", $payload);
+                    
+                    // 触发错误回调
+                    if (isset($this->callbacks['server_error'])) {
+                        $this->callbacks['server_error']($payload);
+                    }
                     break;
             }
             
@@ -246,29 +251,43 @@ class HeartbeatClient
     /**
      * 发送数据
      */
-    public function send(string $data, int $channelId = 0): void
+    public function send(string $data, int $channelId = 0): bool
     {
         if (!$this->connected || !$this->connection) {
-            throw new \RuntimeException('Not connected to server');
+            $this->logger->error('Cannot send: Not connected to server');
+            return false;
         }
         
-        $message = Message::createData($data, $channelId > 0 ? $channelId : $this->channelId);
-        $this->connection->send($message->encode());
-        $this->messagesSent++;
+        try {
+            $message = Message::createData($data, $channelId > 0 ? $channelId : $this->channelId);
+            $this->connection->send($message->encode());
+            $this->messagesSent++;
+            return true;
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to send data: {$e->getMessage()}");
+            return false;
+        }
     }
     
     /**
      * 发送 Ping
      */
-    public function ping(): void
+    public function ping(): bool
     {
         if (!$this->connected || !$this->connection) {
-            throw new \RuntimeException('Not connected to server');
+            $this->logger->error('Cannot ping: Not connected to server');
+            return false;
         }
         
-        $message = new Message(Message::TYPE_PING);
-        $this->connection->send($message->encode());
-        $this->messagesSent++;
+        try {
+            $message = new Message(Message::TYPE_PING);
+            $this->connection->send($message->encode());
+            $this->messagesSent++;
+            return true;
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to send ping: {$e->getMessage()}");
+            return false;
+        }
     }
     
     /**
